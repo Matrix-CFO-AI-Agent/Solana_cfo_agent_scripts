@@ -1,0 +1,45 @@
+
+
+const AAVE_V3_POOL_ABI = [
+    "function depositETH(address lendingPool, address onBehalfOf, uint16 referralCode) external payable",
+    "function deposit(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external",
+    "function getUserAccountData(address user) external view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
+    "function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external"
+];
+
+// UI数据提供者ABI
+const UI_POOL_DATA_PROVIDER_ABI = [
+    "function getReservesList(address provider) external view returns (address[])",
+    "function getAllReservesTokens() external view override returns (TokenData[] memory)"
+];
+
+// ERC20代币基础ABI
+const ERC20_ABI = [
+    "function approve(address spender, uint256 amount) external returns (bool)",
+    "function balanceOf(address account) external view returns (uint256)",
+    "function decimals() external view returns (uint8)",
+    "function symbol() external view returns (string)",
+    "function allowance(address owner, address spender) external view returns (uint256)"
+];
+
+
+// Aave事件ABI
+const AAVE_EVENTS_ABI = [
+    // 存款事件
+    "event Supply(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint16 indexed referralCode)",
+    // 取款事件
+    "event Withdraw(address indexed reserve, address indexed user, address indexed to, uint256 amount)",
+    // 借款事件
+    "event Borrow(address indexed reserve, address user, address indexed onBehalfOf, uint256 amount, uint8 interestRateMode, uint256 borrowRate, uint16 indexed referralCode)",
+    // 还款事件
+    "event Repay(address indexed reserve, address indexed user, address indexed repayer, uint256 amount, bool useATokens)",
+    // 清算事件
+    "event LiquidationCall(address indexed collateralAsset, address indexed debtAsset, address indexed user, uint256 debtToCover, uint256 liquidatedCollateralAmount, address liquidator, bool receiveAToken)",
+    // 利率交换事件
+    "event SwapBorrowRateMode(address indexed reserve, address indexed user, uint8 interestRateMode)",
+    // 抵押品启用/禁用事件
+    "event ReserveUsedAsCollateralEnabled(address indexed reserve, address indexed user)",
+    "event ReserveUsedAsCollateralDisabled(address indexed reserve, address indexed user)"
+];
+
+export { AAVE_V3_POOL_ABI, UI_POOL_DATA_PROVIDER_ABI, AAVE_EVENTS_ABI ,ERC20_ABI};

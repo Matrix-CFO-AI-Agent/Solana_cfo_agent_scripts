@@ -1,0 +1,305 @@
+import { Addressable, ethers } from 'ethers';
+import { AAVE_V3_POOL_ABI, PROTOCOL_DATA_PROVIDER_ABI ,ERC20_ABI} from './constants';
+import dotenv from 'dotenv';
+dotenv.config();
+
+// Aave V3相关合约地址
+// const AAVE_V3_POOL_ADDRESS = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2'; // 主池合约
+// const AAVE_V3_UI_POOL_DATA_PROVIDER = '0x91c0eA31b49B69Ea18607702c5d9aC360bf3dE7d'; // UI数据提供者
+
+// const AAVE_V3_POOL_ADDRESS = '0x76cc67FF2CC77821A70ED14321111Ce381C2594D'; // avax test
+// const AAVE_V3_UI_POOL_DATA_PROVIDER = '0x91c0eA31b49B69Ea18607702c5d9aC360bf3dE7d'; // UI数据提供者
+
+// ERC20代币基础ABI
+// const ERC20_ABI = [
+//     "function approve(address spender, uint256 amount) external returns (bool)",
+//     "function balanceOf(address account) external view returns (uint256)",
+//     "function decimals() external view returns (uint8)",
+//     "function symbol() external view returns (string)",
+//     "function allowance(address owner, address spender) external view returns (uint256)"
+// ];
+
+// Aave V3池合约ABI
+// const AAVE_V3_POOL_ABI = [
+//     "function supply(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external",
+//     "function getUserAccountData(address user) external view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
+//     "function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external"
+// ];
+
+// aave测试网
+// const AAVE_V3_POOL_ABI = [
+//     "function deposit(address asset, uint256 amount, address onBehalfOf, uint16 referralCode) external",
+//     "function getUserAccountData(address user) external view returns (uint256 totalCollateralBase, uint256 totalDebtBase, uint256 availableBorrowsBase, uint256 currentLiquidationThreshold, uint256 ltv, uint256 healthFactor)",
+//     "function setUserUseReserveAsCollateral(address asset, bool useAsCollateral) external"
+// ];
+
+// UI数据提供者ABI
+// const UI_POOL_DATA_PROVIDER_ABI = [
+//     "function getReservesList(address provider) external view returns (address[])",
+//     "function getReservesData(address provider) external view returns (tuple(tuple(address underlyingAsset, string name, string symbol, uint256 decimals, uint256 baseLTVasCollateral, uint256 reserveLiquidationThreshold, uint256 reserveLiquidationBonus, uint256 reserveFactor, bool usageAsCollateralEnabled, bool borrowingEnabled, bool stableBorrowRateEnabled, bool isActive, bool isFrozen, uint128 liquidityIndex, uint128 variableBorrowIndex, uint128 liquidityRate, uint128 variableBorrowRate, uint128 stableBorrowRate, uint40 lastUpdateTimestamp, address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress, address interestRateStrategyAddress, uint256 availableLiquidity, uint256 totalPrincipalStableDebt, uint256 averageStableRate, uint256 stableDebtLastUpdateTimestamp, uint256 totalScaledVariableDebt, uint256 priceInMarketReferenceCurrency, address priceOracle, uint256 variableRateSlope1, uint256 variableRateSlope2, uint256 stableRateSlope1, uint256 stableRateSlope2, uint256 baseStableBorrowRate, uint256 baseVariableBorrowRate, uint256 optimalUsageRatio, bool isPaused, uint128 accruedToTreasury, uint128 unbacked, uint128 isolationModeTotalDebt, address debtCeiling, uint256 debtCeilingDecimals, uint256 eModeCategoryId)[] reservesData, tuple(uint256 marketReferenceCurrencyUnit, int256 marketReferenceCurrencyPriceInUsd, int256 networkBaseTokenPriceInUsd, uint256 networkBaseTokenPriceDecimals) usdPriceEth)"
+// ];
+
+// 格式化显示的数字
+function formatNumber(num: string | number, decimals = 2): string {
+    return parseFloat(num.toString()).toFixed(decimals);
+}
+
+/**
+ * 为指定的用户增加抵押物
+ * @param providerUrl RPC节点URL
+ * @param privateKey 用户私钥
+ * @param tokenAddress 要增加的抵押物代币地址
+ * @param amount 增加的金额（原始单位）
+ */
+async function increaseCollateral(
+    providerUrl: string, 
+    privateKey: string, 
+    tokenAddress: string, 
+    amount: string,
+    aaveV3PoolAddress: string | Addressable,
+    aaveV3UiPoolDataProvider: string | undefined
+) {
+    try {
+        // 连接以太坊网络
+        const provider = new ethers.JsonRpcProvider(providerUrl);
+        const signer = new ethers.Wallet(privateKey, provider);
+        const userAddress = signer.address;
+
+        console.log(`\n=== Aave V3 增加抵押物操作 ===`);
+        console.log(`用户地址: ${userAddress}`);
+
+        // 创建Aave池合约实例
+        const aavePool = new ethers.Contract(
+            aaveV3PoolAddress,
+            AAVE_V3_POOL_ABI,
+            signer
+        );
+        
+        // 检查增加抵押物前的账户状态
+        const beforeData = await aavePool.getUserAccountData(userAddress);
+        
+        console.log(`beforeData value is ${beforeData}`);
+        
+        console.log(`\n增加抵押物前的账户状态:`);
+        console.log(`总抵押品: $${formatNumber(beforeData.totalCollateralBase)}`);
+        console.log(`总债务: $${formatNumber(beforeData.totalDebtBase)}`);
+        console.log(`健康因子: ${formatNumber(beforeData.healthFactor)}`);
+
+        let supplyTx:ethers.TransactionResponse
+        
+        if (tokenAddress) {
+            const amountBigInt = await handleTokenApprove(tokenAddress, signer, userAddress, amount, aaveV3PoolAddress);
+
+            if (amountBigInt instanceof Error) {
+                throw amountBigInt;
+            }
+
+                    // 存款到Aave（增加抵押物）
+            console.log(`\n正在增加抵押物...`);
+            supplyTx = await aavePool.deposit(
+                tokenAddress,
+                amountBigInt,
+                userAddress,  // onBehalfOf，为自己增加抵押物
+                0,
+                {gasLimit:6000000,gasPrice:"20000000"}  // referralCode，通常为0
+            );
+        } else {
+            const newAavePool = new ethers.Contract(
+                "0x1648C14DbB6ccdd5846969cE23DeEC4C66a03335",
+                AAVE_V3_POOL_ABI,
+                signer
+            );
+            supplyTx = await newAavePool.depositETH(
+                "0x76cc67FF2CC77821A70ED14321111Ce381C2594D",
+                userAddress,
+                0,
+                {value:ethers.parseEther(amount),gasLimit:6000000,gasPrice:"20000000"}
+            )
+        }
+        
+        console.log(`增加抵押物交易已提交，等待确认...`);
+        console.log(`交易哈希: ${supplyTx.hash}`);
+        await supplyTx.wait();
+        console.log(`增加抵押物交易已确认`);
+
+        // 确保代币设置为抵押品
+        // await enableAssetAsCollateral(aavePool, tokenAddress, signer, aaveV3PoolAddress, aaveV3UiPoolDataProvider);
+
+        // 检查增加抵押物后的账户状态
+        const afterData = await aavePool.getUserAccountData(userAddress);
+        console.log(`\n增加抵押物后的账户状态:`);
+        console.log(`总抵押品: $${formatNumber(ethers.formatUnits(afterData.totalCollateralBase, 8))}`);
+        console.log(`总债务: $${formatNumber(ethers.formatUnits(afterData.totalDebtBase, 8))}`);
+        console.log(`健康因子: ${formatNumber(ethers.formatUnits(afterData.healthFactor, 18))}`);
+
+        // 计算变化
+        const collateralChange = parseFloat(ethers.formatUnits(afterData.totalCollateralBase - beforeData.totalCollateralBase, 8));
+        const healthFactorChange = parseFloat(ethers.formatUnits(afterData.healthFactor - beforeData.healthFactor, 18));
+
+        console.log(`\n变化总结:`);
+        console.log(`抵押品增加: $${formatNumber(collateralChange)}`);
+        console.log(`健康因子变化: ${formatNumber(healthFactorChange)}`);
+        
+        if (collateralChange > 0) {
+            console.log(`操作成功: 已成功增加 ${amount} 作为抵押物`);
+        } else {
+            console.log(`警告: 抵押品价值未增加，请检查操作是否成功`);
+        }
+
+        console.log(`\n=== 操作完成 ===`);
+        
+        return {
+            success: true,
+            transactionHash: supplyTx.hash,
+            // amountAdded: `${amount} ${symbol}`,
+            amountAdded: `${amount}`,
+            collateralChange: `$${formatNumber(collateralChange)}`,
+            healthFactorAfter: formatNumber(ethers.formatUnits(afterData.healthFactor, 18))
+        };
+        
+    } catch (error) {
+        console.error("增加抵押物时出错:", error);
+        
+        return {
+            success: false,
+            error: error instanceof Error ? error.message : '未知错误'
+        };
+    }
+}
+
+async function handleTokenApprove(
+    tokenAddress:string,
+    signer:ethers.Wallet,
+    userAddress:string,
+    amount:string,
+    aaveV3PoolAddress:string | Addressable
+) : Promise<bigint|Error>{
+
+    try {
+        // 创建代币合约实例
+        const tokenContract = new ethers.Contract(
+            tokenAddress,
+            ERC20_ABI,
+            signer
+        );
+
+        // 获取代币信息
+        const symbol = await tokenContract.symbol();
+        const decimals = await tokenContract.decimals();
+        const amountBigInt = ethers.parseUnits(amount, decimals);
+
+        console.log(`代币: ${symbol}`);
+        console.log(`增加金额: ${amount} ${symbol}`);
+
+        // 检查余额是否足够
+        const balance = await tokenContract.balanceOf(userAddress);
+        if (balance < amountBigInt) {
+            console.error(`余额不足: 需要 ${ethers.formatUnits(amountBigInt, decimals)} ${symbol}, 但只有 ${ethers.formatUnits(balance, decimals)} ${symbol}`);
+            return new Error(`余额不足: 需要 ${ethers.formatUnits(amountBigInt, decimals)} ${symbol}, 但只有 ${ethers.formatUnits(balance, decimals)} ${symbol}`);
+        }
+
+        // 检查授权是否足够
+        const allowance = await tokenContract.allowance(userAddress, aaveV3PoolAddress);
+        if (allowance < amountBigInt) {
+            console.log(`授权不足，正在授权...`);
+            
+            // 授权Aave池合约使用代币
+            const approveTx = await tokenContract.approve(
+                aaveV3PoolAddress,
+                ethers.MaxUint256 // 授权最大值，避免未来再次授权
+            );
+            
+            console.log(`授权交易已提交，等待确认...`);
+            console.log(`交易哈希: ${approveTx.hash}`);
+            await approveTx.wait();
+            console.log(`授权交易已确认`);
+        } else {
+            console.log(`授权充足，无需再次授权`);
+        }
+        return amountBigInt;
+    } catch(error:any) {
+        console.error("token 授权出错:", error);
+        
+        return error instanceof Error ? error : new Error('未知错误');
+    }
+}
+
+/**
+ * 确保资产被设置为抵押品
+ */
+async function enableAssetAsCollateral(aavePool:ethers.Contract, tokenAddress:string, signer:ethers.Wallet, aaveV3PoolAddress:string | Addressable, aaveV3UiPoolDataProvider:string | undefined) {
+    try {
+        // 创建UI数据提供者合约实例，用于检查抵押品状态
+        if (!aaveV3UiPoolDataProvider) {
+            throw new Error("AAVE_V3_UI_POOL_DATA_PROVIDER 地址未定义");
+        }
+        const uiDataProvider = new ethers.Contract(
+            aaveV3UiPoolDataProvider,
+            PROTOCOL_DATA_PROVIDER_ABI,
+            signer
+        );
+
+        // 获取所有资产数据
+        const { reservesData } = await uiDataProvider.getReservesData(aaveV3PoolAddress);
+
+        // 查找目标代币数据
+        const tokenData = reservesData.find((reserve: { underlyingAsset: string; }[]) => 
+            reserve[0].underlyingAsset.toLowerCase() === tokenAddress.toLowerCase()
+        );
+
+        if (tokenData && tokenData[0].usageAsCollateralEnabled) {
+            // 如果代币可以作为抵押品，确保为当前用户启用
+            console.log(`正在确保 ${await (new ethers.Contract(tokenAddress, ERC20_ABI, signer)).symbol()} 设置为抵押品...`);
+            const tx = await aavePool.setUserUseReserveAsCollateral(tokenAddress, true);
+            await tx.wait();
+            console.log(`已成功将资产设置为抵押品`);
+        } else if (tokenData && !tokenData[0].usageAsCollateralEnabled) {
+            console.log(`警告: 此代币不能作为抵押品使用`);
+        } else {
+            console.log(`警告: 无法找到代币信息`);
+        }
+    } catch (error) {
+        console.error("设置抵押品状态时出错:", error);
+    }
+}
+
+// 主函数 - 示例用法
+async function main() {
+    // 配置参数
+    // const providerUrl = 'https://ava-testnet.public.blastapi.io/ext/bc/C/rpc'; // 使用自己的RPC URL
+    // const privateKey = '5e8e037cb29329c4f686e2aaba1c43b54e9bbc98139d8574beb5c230be6227ab'; // 实际使用时请确保安全存储私钥
+    // const tokenAddress = '0xd00ae08403B9bbb9124bB305C09058E32C39A48c'; // WETH地址
+    const tokenAddress = ''
+    const amount = '0.0001'; // 增加0.01 WETH作为抵押物
+    // const amount = '1000000';
+    
+    try {
+        if (!process.env.AAVE_V3_POOL_ADDRESS || !process.env.AAVE_V3_UI_POOL_DATA_PROVIDER) {
+            throw new Error("缺少必要的环境变量: AAVE_V3_POOL_ADDRESS 或 AAVE_V3_UI_POOL_DATA_PROVIDER");
+        }
+        if (!process.env.PROVIDER_URL || !process.env.PRIVATE_KEY) {
+            throw new Error("缺少必要的环境变量: PROVIDER_URL, PRIVATE_KEY 或 TOKEN_ADDRESS");
+        }
+        
+        const result = await increaseCollateral(
+            process.env.PROVIDER_URL, 
+            process.env.PRIVATE_KEY, 
+            tokenAddress, 
+            amount,
+            process.env.AAVE_V3_POOL_ADDRESS,
+            process.env.AAVE_V3_UI_POOL_DATA_PROVIDER
+        );
+        console.log("操作结果:", result);
+    } catch (error) {
+        console.error("执行脚本时出错:", error);
+    }
+}
+
+// 如果直接运行此脚本，则执行主函数
+// if (require.main === module) {
+//     main();
+// }
+main();
+
+// 导出函数，允许其他模块调用
+export { increaseCollateral };

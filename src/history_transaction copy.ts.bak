@@ -1,0 +1,375 @@
+import { ethers } from "ethers";
+import dotenv from 'dotenv';
+import { AAVE_V3_POOL_ABI, PROTOCOL_DATA_PROVIDER_ABI, AAVE_EVENTS_ABI } from "./constants";
+dotenv.config();
+
+// Aave V3合约地址
+// const AAVE_V3_POOL_ADDRESS = '0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2';
+// const AAVE_V3_POOL_DATA_PROVIDER = '0x7B4EB56E7CD4b454BA8ff71E4518426369a138a3';
+
+// const AAVE_V3_POOL_DATA_PROVIDER = '0x1e26247502e90b4fab9D0d17e4775e90085D2A35';
+
+// 常见代币地址到符号的映射 (作为备用)
+const KNOWN_TOKENS = {
+    "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2": { symbol: "WETH", decimals: 18 },
+    "0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599": { symbol: "WBTC", decimals: 8 },
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48": { symbol: "USDC", decimals: 6 },
+    "0xdAC17F958D2ee523a2206206994597C13D831ec7": { symbol: "USDT", decimals: 6 },
+    "0x6B175474E89094C44Da98b954EedeAC495271d0F": { symbol: "DAI", decimals: 18 },
+    "0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9": { symbol: "AAVE", decimals: 18 },
+    "0x514910771AF9Ca656af840dff83E8264EcF986CA": { symbol: "LINK", decimals: 18 }
+};
+
+// 格式化代币金额
+function formatTokenAmount(amount: string, decimals: number, symbol: string) {
+    return `${ethers.formatUnits(amount, decimals)} ${symbol}`;
+}
+
+// 获取所有代币信息
+async function getTokenInfo(provider: ethers.JsonRpcProvider) {
+    try {
+        if (!process.env.AAVE_V3_PROTOCOL_DATA_PROVIDER) {
+            throw new Error('AAVE_V3_PROTOCOL_DATA_PROVIDER environment variable is not defined');
+        }
+        const dataProvider = new ethers.Contract(
+            process.env.AAVE_V3_PROTOCOL_DATA_PROVIDER,
+            PROTOCOL_DATA_PROVIDER_ABI,
+            provider
+        );
+
+        const allReservesTokens = await dataProvider.getAllReservesTokens();
+
+
+        // console.log(`allReservesTokens value is ${allReservesTokens}`)
+        
+        // 创建地址到代币信息的映射
+        const tokenMap = {};
+        for (const token of allReservesTokens) {
+            const tokenAddress = token.tokenAddress.toLowerCase();
+            const decimalsData = await dataProvider.getReserveConfigurationData(token.tokenAddress);
+            
+            (tokenMap as Record<string, { symbol: string; decimals: number }>)[tokenAddress] = {
+                symbol: token.symbol,
+                decimals: Number(decimalsData[0])
+            };
+        }
+        
+        return { ...KNOWN_TOKENS, ...tokenMap };
+    } catch (error) {
+        console.error("获取代币信息出错:", error);
+        return KNOWN_TOKENS; // 返回预定义的代币信息作为备用
+    }
+}
+
+// 修复事件数据中的Block类型问题
+interface AaveEvent {
+    blockNumber: number;
+    transactionHash: string;
+    name?: string;
+    event?: string;
+    eventName?: string;
+    args: any;
+    block?: {
+        timestamp: number;
+    };
+    [key: string]: any;
+}
+
+// 格式化事件数据的返回类型
+interface FormattedEvent {
+    timestamp: string;
+    txHash: string;
+    eventType: string;
+    description: string;
+    blockNumber: number;
+    raw: any;
+}
+
+// 格式化事件数据
+function formatEventData(event: AaveEvent, tokenInfo: any): FormattedEvent {
+    const timestamp = event.block && event.block.timestamp 
+        ? new Date(event.block.timestamp * 1000).toLocaleString() 
+        : new Date().toLocaleString();
+    const txHash = event.transactionHash;
+    let eventType = event.name || event.eventName || event.event || "Unknown";
+    let description = "";
+    console.log(`eventType value is ${eventType}`)
+    // 根据事件类型格式化描述
+    switch (eventType) {
+        case "Supply": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            const amount = formatTokenAmount(event.args.amount, token.decimals, token.symbol);
+            description = `存款 ${amount}`;
+            break;
+        }
+        case "Withdraw": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            const amount = formatTokenAmount(event.args.amount, token.decimals, token.symbol);
+            description = `取款 ${amount}`;
+            break;
+        }
+        case "Borrow": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            const amount = formatTokenAmount(event.args.amount, token.decimals, token.symbol);
+            const interestMode = event.args.interestRateMode === 1 ? "稳定利率" : "浮动利率";
+            description = `借款 ${amount} (${interestMode})`;
+            break;
+        }
+        case "Repay": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            const amount = formatTokenAmount(event.args.amount, token.decimals, token.symbol);
+            description = `还款 ${amount}`;
+            break;
+        }
+        case "LiquidationCall": {
+            const collateralAsset = event.args.collateralAsset.toLowerCase();
+            const debtAsset = event.args.debtAsset.toLowerCase();
+            const collateralToken = tokenInfo[collateralAsset] || { symbol: "未知代币", decimals: 18 };
+            const debtToken = tokenInfo[debtAsset] || { symbol: "未知代币", decimals: 18 };
+            
+            const debtAmount = formatTokenAmount(event.args.debtToCover, debtToken.decimals, debtToken.symbol);
+            const collateralAmount = formatTokenAmount(
+                event.args.liquidatedCollateralAmount, 
+                collateralToken.decimals, 
+                collateralToken.symbol
+            );
+            
+            description = `被清算: 债务 ${debtAmount}, 抵押物 ${collateralAmount}`;
+            break;
+        }
+        case "SwapBorrowRateMode": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            const newMode = event.args.interestRateMode === 1 ? "稳定利率" : "浮动利率";
+            description = `切换 ${token.symbol} 借款利率模式为 ${newMode}`;
+            break;
+        }
+        case "ReserveUsedAsCollateralEnabled": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            description = `启用 ${token.symbol} 作为抵押品`;
+            break;
+        }
+        case "ReserveUsedAsCollateralDisabled": {
+            const reserve = event.args.reserve.toLowerCase();
+            const token = tokenInfo[reserve] || { symbol: "未知代币", decimals: 18 };
+            description = `禁用 ${token.symbol} 作为抵押品`;
+            break;
+        }
+        default:
+            description = `未知事件: ${eventType}`;
+    }
+
+    return {
+        timestamp,
+        txHash,
+        eventType,
+        description,
+        blockNumber: event.blockNumber,
+        raw: event
+    };
+}
+
+// 获取用户的Aave交易历史
+async function getUserAaveHistory(providerUrl: string, userAddress: string, fromBlock = 0, toBlock = "latest") {
+    try {
+        // 连接以太坊网络
+        // 使用更可靠的节点或考虑添加多个节点以进行故障转移
+        const provider = new ethers.JsonRpcProvider(providerUrl);
+        console.log("正在连接到RPC节点...");
+        
+        // 创建合约实例
+        if (!process.env.AAVE_V3_POOL_ADDRESS) {
+            throw new Error("AAVE_V3_POOL_ADDRESS 环境变量未设置");
+        }
+        
+        // 合并函数ABI和事件ABI
+        const combinedABI = [...AAVE_V3_POOL_ABI, ...AAVE_EVENTS_ABI];
+        
+        const aavePool = new ethers.Contract(
+            process.env.AAVE_V3_POOL_ADDRESS,
+            combinedABI,
+            provider
+        );
+        console.log("aavePool value is", aavePool);
+
+        // 获取代币信息
+        const tokenInfo = await getTokenInfo(provider);
+
+        console.log("tokenInfo value is", tokenInfo);
+
+        // 为每种事件类型创建过滤器
+        const eventTypes = [
+            "Supply", "Withdraw", "Borrow", "Repay", 
+            "LiquidationCall", "SwapBorrowRateMode",
+            "ReserveUsedAsCollateralEnabled", "ReserveUsedAsCollateralDisabled"
+        ];
+
+        let allEvents: AaveEvent[] = [];
+
+        // 如果fromBlock是0，尝试获取更合理的起始区块
+        if (fromBlock === 0) {
+            // 尝试获取当前区块以确定更合理的开始区块
+            const currentBlock = await provider.getBlockNumber();
+            // 仅查询最近100,000个区块（约2周的数据）以避免RPC节点超时
+            fromBlock = Math.max(currentBlock - 100000, 0);
+            console.log(`为避免RPC节点限制，将查询范围设置为区块 ${fromBlock} 至最新`);
+        }
+
+        // 计算区块范围并分批查询，避免RPC节点限制
+        const BATCH_SIZE = 10000; // 每批10,000个区块
+        const currentBlock = typeof toBlock === "string" ? await provider.getBlockNumber() : toBlock;
+        
+        for (const eventType of eventTypes) {
+            try {
+                console.log(`正在查询 ${eventType} 事件...`);
+                
+                // 分批处理以避免RPC超时
+                for (let batchStart = fromBlock; batchStart <= currentBlock; batchStart += BATCH_SIZE) {
+                    const batchEnd = Math.min(batchStart + BATCH_SIZE - 1, currentBlock);
+                    console.log(`处理区块范围: ${batchStart} - ${batchEnd} (事件类型: ${eventType})`);
+                    
+                    try {
+                        let filter;
+                        
+                        // 根据事件类型和用户地址创建不同的过滤器
+                        switch (eventType) {
+                            case "Supply":
+                            case "Borrow":
+                                // 用户可能是onBehalfOf字段
+                                filter = aavePool.filters[eventType](null, null, userAddress);
+                                break;
+                            case "Withdraw":
+                            case "ReserveUsedAsCollateralEnabled":
+                            case "ReserveUsedAsCollateralDisabled":
+                            case "SwapBorrowRateMode":
+                                filter = aavePool.filters[eventType](null, userAddress);
+                                break;
+                            case "Repay":
+                                // 用户可能是还款人或被还款人
+                                filter = aavePool.filters[eventType](null, userAddress);
+                                const events = await aavePool.queryFilter(filter, batchStart, batchEnd);
+                                allEvents = [...allEvents, ...events as AaveEvent[]];
+                                
+                                // 添加延迟以避免RPC节点限制
+                                await new Promise(resolve => setTimeout(resolve, 500));
+                                
+                                // 用户也可能是repayer字段
+                                const repayerFilter = aavePool.filters[eventType](null, null, userAddress);
+                                const repayerEvents = await aavePool.queryFilter(repayerFilter, batchStart, batchEnd);
+                                allEvents = [...allEvents, ...repayerEvents as AaveEvent[]];
+                                continue; // 已经处理了这个情况，继续下一个批次
+                            case "LiquidationCall":
+                                // 用户被清算
+                                filter = aavePool.filters[eventType](null, null, userAddress);
+                                break;
+                            default:
+                                filter = aavePool.filters[eventType]();
+                        }
+
+                        // 查询事件并添加到列表
+                        const events = await aavePool.queryFilter(filter, batchStart, batchEnd);
+                        allEvents = [...allEvents, ...events as AaveEvent[]];
+                        
+                        // 添加延迟以避免RPC节点限制
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    } catch (error) {
+                        console.error(`获取 ${eventType} 事件在区块范围 ${batchStart}-${batchEnd} 时出错:`, error instanceof Error ? error.message : String(error));
+                        // 出错时尝试增加延迟并继续下一批次
+                        await new Promise(resolve => setTimeout(resolve, 2000));
+                    }
+                }
+            } catch (error) {
+                console.error(`获取 ${eventType} 事件时出错:`, error instanceof Error ? error.message : String(error));
+                // 继续处理其他事件类型
+            }
+        }
+
+        // 按区块号排序事件
+        console.log(`共找到 ${allEvents.length} 个事件，正在排序...`);
+        allEvents.sort((a, b) => b.blockNumber - a.blockNumber);
+
+        // 获取事件对应的区块时间戳（分批处理以避免过多请求）
+        const TIMESTAMP_BATCH_SIZE = 20;
+        const formattedEvents: FormattedEvent[] = [];
+        
+        for (let i = 0; i < allEvents.length; i += TIMESTAMP_BATCH_SIZE) {
+            const eventBatch = allEvents.slice(i, i + TIMESTAMP_BATCH_SIZE);
+            const batchPromises = eventBatch.map(async (event) => {
+                console.log("event value is", event);
+                console.log("eventType value is", event.eventName || event.event);
+                
+                if (!event.block) {
+                    try {
+                        const block = await provider.getBlock(event.blockNumber);
+                        // 修复类型问题，处理null的情况
+                        event.block = block ? { timestamp: block.timestamp } : { timestamp: Math.floor(Date.now() / 1000) };
+                    } catch (error) {
+                        console.error(`获取区块 ${event.blockNumber} 信息时出错:`, error instanceof Error ? error.message : String(error));
+                        // 如果获取区块信息失败，使用当前时间作为备用
+                        event.block = { timestamp: Math.floor(Date.now() / 1000) };
+                    }
+                }
+                return formatEventData(event, tokenInfo);
+            });
+            
+            const batchResults = await Promise.all(batchPromises);
+            formattedEvents.push(...batchResults);
+            
+            // 添加延迟以避免RPC节点限制
+            if (i + TIMESTAMP_BATCH_SIZE < allEvents.length) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            }
+        }
+
+        return formattedEvents;
+    } catch (error) {
+        console.error("获取用户Aave历史记录时出错:", error);
+        throw error;
+    }
+}
+
+// 打印用户的Aave交易历史
+function printUserAaveHistory(userAddress, history) {
+    console.log(`\n=== Aave 用户交易历史 ===`);
+    console.log(`用户地址: ${userAddress}`);
+    console.log(`总事件数: ${history.length}`);
+    console.log('------------------------');
+
+    history.forEach((event, index) => {
+        console.log(`[${index + 1}] ${event.timestamp}`);
+        console.log(`类型: ${event.eventType}`);
+        console.log(`描述: ${event.description}`);
+        console.log(`交易哈希: ${event.txHash}`);
+        console.log('------------------------');
+    });
+}
+
+// 主函数
+async function main() {
+    // 用户地址
+    const userAddress = '0xC33D53d4ACa86A8e40c050E92D23E3842789641e';
+    // 设置起始区块，可以根据需要调整
+    // const fromBlock = 16300000; // 从约ETH合并后开始
+    const fromBlock = 0; // 从约ETH合并后开始
+    
+    try {
+        if (!process.env.PROVIDER_URL) {
+            throw new Error('PROVIDER_URL 环境变量未设置');
+        }
+        console.log(`正在获取 ${userAddress} 的Aave交易历史...`);
+        const history = await getUserAaveHistory(process.env.PROVIDER_URL, userAddress, fromBlock);
+        printUserAaveHistory(userAddress, history);
+    } catch (error) {
+        console.error('执行查询时出错:', error instanceof Error ? error.message : String(error));
+    }
+}
+
+// 运行脚本
+// main();
+
+export { getUserAaveHistory };
