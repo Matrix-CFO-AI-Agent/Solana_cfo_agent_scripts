@@ -1,4 +1,4 @@
-# Solana Lending V3 工具集
+# Solana Lending 工具集
 
 这个项目提供了一套与Solana Lending V3协议交互的工具，主要功能包括：
 
